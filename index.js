@@ -1,6 +1,6 @@
 const express = require('express');
 const app = express()
-const port = 5000
+const port = process.env.PORT || 5000
 
 const cors = require('cors')
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
@@ -28,7 +28,7 @@ async function run() {
     await client.connect();
 
     const database = client.db("redlife");
-    const usersCollection = database.collection("users");
+    const usersCollection = database.collection("user");
 
 
 
@@ -49,7 +49,36 @@ async function run() {
 
 
 
+    //profile update
+    app.post('/api/profile/update-profile', async (req, res) => {
+      const { userId, name, email, image, number, bloodGroup, district, upazila } = req.body;
 
+      try {
+        const filter = { _id: new ObjectId(userId) };
+        const updateDoc = {
+          $set: {
+            name,
+            email,
+            number,
+            image,
+            bloodGroup,
+            district,
+            upazila
+          },
+        };
+
+        const result = await usersCollection.updateOne(filter, updateDoc);
+
+        if (result.modifiedCount === 1) {
+          res.status(200).json({ message: 'Profile updated successfully' });
+        } else {
+          res.status(404).json({ message: 'User not found or no changes made' });
+        }
+      } catch (error) {
+        console.error('Error updating profile:', error);
+        res.status(500).json({ message: 'Internal server error' });
+      }
+    });
 
 
 
