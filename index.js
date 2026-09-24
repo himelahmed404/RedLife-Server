@@ -29,8 +29,20 @@ async function run() {
 
     const database = client.db("redlife");
     const usersCollection = database.collection("user");
+    const donationRequestsCollection = database.collection("donationRequests");
 
+    // Create donation request
+    app.post('/api/create-donation-request', async (req, res) => {
+      const donationRequest = req.body;
 
+      try {
+        const result = await donationRequestsCollection.insertOne(donationRequest);
+        res.status(201).json({ message: 'Donation request created successfully', id: result.insertedId });
+      } catch (error) {
+        console.error('Error creating donation request:', error);
+        res.status(500).json({ message: 'Internal server error' });
+      }
+    });
 
 
 
