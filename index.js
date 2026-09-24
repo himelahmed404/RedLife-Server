@@ -45,7 +45,22 @@ async function run() {
     });
 
 
-
+    //donation request get by user id
+    app.get('/api/donation-requests/:userId', async (req, res) => {
+      const { userId } = req.params;
+    
+      try {
+        const donationRequests = await donationRequestsCollection
+          .find({ userId: userId })
+          .sort({ createdAt: -1 }) 
+          .toArray();
+    
+        res.status(200).json(donationRequests);
+      } catch (error) {
+        console.error('Error fetching donation requests:', error);
+        res.status(500).json({ message: 'Internal server error' });
+      }
+    });
 
 
 
