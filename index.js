@@ -48,13 +48,13 @@ async function run() {
     //donation request get by user id
     app.get('/api/donation-requests/:userId', async (req, res) => {
       const { userId } = req.params;
-    
+
       try {
         const donationRequests = await donationRequestsCollection
           .find({ userId: userId })
-          .sort({ createdAt: -1 }) 
+          .sort({ createdAt: -1 })
           .toArray();
-    
+
         res.status(200).json(donationRequests);
       } catch (error) {
         console.error('Error fetching donation requests:', error);
@@ -62,26 +62,10 @@ async function run() {
       }
     });
 
-    // 2. Edit/Update full donation request details
-app.put('/api/donation-requests/edit/:id', async (req, res) => {
-  const { id } = req.params;
-  const {
-    recipientName,
-    bloodGroup,
-    districtName,
-    upazilaName,
-    hospitalName,
-    address,
-    donationDate,
-    donationTime,
-    message,
-    status
-  } = req.body;
-
-  try {
-    const filter = { _id: new ObjectId(id) };
-    const updateDoc = {
-      $set: {
+    // Edit/Update full donation request details
+    app.put('/api/donation-requests/edit/:id', async (req, res) => {
+      const { id } = req.params;
+      const {
         recipientName,
         bloodGroup,
         districtName,
@@ -91,26 +75,58 @@ app.put('/api/donation-requests/edit/:id', async (req, res) => {
         donationDate,
         donationTime,
         message,
-        ...(status && { status }),
-        updatedAt: new Date().toISOString()
+        status
+      } = req.body;
+
+      try {
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            recipientName,
+            bloodGroup,
+            districtName,
+            upazilaName,
+            hospitalName,
+            address,
+            donationDate,
+            donationTime,
+            message,
+            ...(status && { status }),
+            updatedAt: new Date().toISOString()
+          }
+        };
+
+        const result = await donationRequestsCollection.updateOne(filter, updateDoc);
+
+        if (result.matchedCount === 1) {
+          res.status(200).json({ message: "Request updated successfully" });
+        } else {
+          res.status(404).json({ message: "Request not found" });
+        }
+      } catch (error) {
+        console.error("Edit request error:", error);
+        res.status(500).json({ message: "Internal server error" });
       }
-    };
-
-    const result = await donationRequestsCollection.updateOne(filter, updateDoc);
-
-    if (result.matchedCount === 1) {
-      res.status(200).json({ message: "Request updated successfully" });
-    } else {
-      res.status(404).json({ message: "Request not found" });
-    }
-  } catch (error) {
-    console.error("Edit request error:", error);
-    res.status(500).json({ message: "Internal server error" });
-  }
-});
+    });
 
 
+    // Delete a donation request
+    app.delete('/api/donation-requests/:id', async (req, res) => {
+      const { id } = req.params;
 
+      try {
+        const result = await donationRequestsCollection.deleteOne({ _id: new ObjectId(id) });
+
+        if (result.deletedCount === 1) {
+          res.status(200).json({ message: "Request deleted successfully" });
+        } else {
+          res.status(404).json({ message: "Request not found" });
+        }
+      } catch (error) {
+        console.error("Delete request error:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
 
 
 
@@ -178,4 +194,3 @@ app.listen(port, () => {
 })
 
 
- 
