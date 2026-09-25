@@ -62,6 +62,53 @@ async function run() {
       }
     });
 
+    // 2. Edit/Update full donation request details
+app.put('/api/donation-requests/edit/:id', async (req, res) => {
+  const { id } = req.params;
+  const {
+    recipientName,
+    bloodGroup,
+    districtName,
+    upazilaName,
+    hospitalName,
+    address,
+    donationDate,
+    donationTime,
+    message,
+    status
+  } = req.body;
+
+  try {
+    const filter = { _id: new ObjectId(id) };
+    const updateDoc = {
+      $set: {
+        recipientName,
+        bloodGroup,
+        districtName,
+        upazilaName,
+        hospitalName,
+        address,
+        donationDate,
+        donationTime,
+        message,
+        ...(status && { status }),
+        updatedAt: new Date().toISOString()
+      }
+    };
+
+    const result = await donationRequestsCollection.updateOne(filter, updateDoc);
+
+    if (result.matchedCount === 1) {
+      res.status(200).json({ message: "Request updated successfully" });
+    } else {
+      res.status(404).json({ message: "Request not found" });
+    }
+  } catch (error) {
+    console.error("Edit request error:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
 
 
 
