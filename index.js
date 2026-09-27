@@ -128,7 +128,18 @@ async function run() {
       }
     });
 
+    //Admin apis
 
+    //Get all users
+    app.get('/api/admin/users', async (req, res) => {
+      try {
+        const users = await usersCollection.find({}).sort({ createdAt: -1 }).toArray();
+        res.status(200).json(users);
+      } catch (error) {
+        console.error('Error fetching users:', error);
+        res.status(500).json({ message: 'Internal server error' });
+      }
+    });
 
 
 
