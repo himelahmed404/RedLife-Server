@@ -141,6 +141,39 @@ async function run() {
       }
     });
 
+    // All donation requests (Admin only)
+    app.get('/api/all-blood-donation-requests', async (req, res) => {
+      try {
+        const donationRequests = await donationRequestsCollection.find({}).sort({ createdAt: -1 }).toArray();
+        res.status(200).json(donationRequests);
+      } catch (error) {
+        console.error('Error fetching donation requests:', error);
+        res.status(500).json({ message: 'Internal server error' });
+      }
+    });
+
+    app.patch('/api/donation-requests/status/:id', async (req, res) => {
+      const { id } = req.params;
+      const { status } = req.body;
+    
+      try {
+        const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+        const result = await donationRequestsCollection.updateOne(
+          query,
+          { $set: { status, updatedAt: new Date().toISOString() } }
+        );
+    
+        if (result.matchedCount === 1) {
+          res.status(200).json({ message: "Status updated successfully", status });
+        } else {
+          res.status(404).json({ message: "Request not found" });
+        }
+      } catch (error) {
+        console.error("Status update error:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
     // Toggle user active/inactive status (isActive: boolean)
     app.patch('/api/admin/users/:id/status', async (req, res) => {
       const { id } = req.params;
