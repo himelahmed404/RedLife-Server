@@ -130,7 +130,7 @@ async function run() {
 
     //Admin apis
 
-    //Get all users
+    // Get all users
     app.get('/api/admin/users', async (req, res) => {
       try {
         const users = await usersCollection.find({}).sort({ createdAt: -1 }).toArray();
@@ -141,8 +141,66 @@ async function run() {
       }
     });
 
+    // Toggle user active/inactive status (isActive: boolean)
+    app.patch('/api/admin/users/:id/status', async (req, res) => {
+      const { id } = req.params;
+      const { isActive } = req.body; // Expects boolean true or false
+
+      try {
+        const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+        const result = await usersCollection.updateOne(
+          query,
+          {
+            $set: {
+              isActive: Boolean(isActive),
+              updatedAt: new Date()
+            }
+          }
+        );
+
+        if (result.matchedCount === 1) {
+          res.status(200).json({
+            message: `User is now ${isActive ? "active" : "inactive"}`,
+            isActive: Boolean(isActive)
+          });
+        } else {
+          res.status(404).json({ message: 'User not found' });
+        }
+      } catch (error) {
+        console.error('Error updating status:', error);
+        res.status(500).json({ message: 'Internal server error' });
+      }
+    });
 
 
+    // Update user role (handles both 'Role' and 'role')
+    app.patch('/api/admin/users/:id/role', async (req, res) => {
+      const { id } = req.params;
+      const { role } = req.body; // "admin" | "volunteer" | "donor"
+
+      try {
+        const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+        const result = await usersCollection.updateOne(
+          query,
+          {
+            $set: {
+              Role: role.toLowerCase(),
+              role: role.toLowerCase(),
+              updatedAt: new Date()
+            }
+          }
+        );
+
+        if (result.matchedCount === 1) {
+          res.status(200).json({ message: `User role changed to ${role}` });
+        } else {
+          res.status(404).json({ message: 'User not found' });
+        }
+      } catch (error) {
+        console.error('Error updating role:', error);
+        res.status(500).json({ message: 'Internal server error' });
+      }
+    });
 
 
 
