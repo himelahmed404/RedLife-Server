@@ -88,7 +88,21 @@ app.post('/api/create-donation-request', async (req, res) => {
       return res.status(403).json({ message: 'Your account is blocked. Blocked users cannot create donation requests.' });
     }
 
-    const result = await donationRequestsCollection.insertOne(donationRequest);
+    // Only take the form fields; status, donor and timestamps are set here, not by the client
+    const {
+      recipientName, bloodGroup, districtId, upazilaId, districtName, upazilaName,
+      hospitalName, address, donationDate, donationTime, message, requesterName, requesterEmail
+    } = donationRequest;
+
+    const newRequest = {
+      recipientName, bloodGroup, districtId, upazilaId, districtName, upazilaName,
+      hospitalName, address, donationDate, donationTime, message, requesterName, requesterEmail,
+      userId,
+      status: 'pending',
+      createdAt: new Date(),
+    };
+
+    const result = await donationRequestsCollection.insertOne(newRequest);
     res.status(201).json({ message: 'Donation request created successfully', id: result.insertedId });
   } catch (error) {
     console.error('Error creating donation request:', error);
@@ -295,29 +309,6 @@ app.get('/api/all-blood-donation-requests', async (req, res) => {
   }
 });
 
-// Update donation request status by admin and volunteer (e.g., "pending", "approved", "canceled")
-app.patch('/api/donation-requests/status/:id', async (req, res) => {
-  const { id } = req.params;
-  const { status } = req.body;
-
-  try {
-    const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
-    const result = await donationRequestsCollection.updateOne(
-      query,
-      { $set: { status, updatedAt: new Date().toISOString() } }
-    );
-
-    if (result.matchedCount === 1) {
-      res.status(200).json({ message: "Status updated successfully", status });
-    } else {
-      res.status(404).json({ message: "Request not found" });
-    }
-  } catch (error) {
-    console.error("Status update error:", error);
-    res.status(500).json({ message: "Internal server error" });
-  }
-});
-
 // Toggle user active/blocked status (isActive: boolean)
 app.patch('/api/admin/users/:id/status', async (req, res) => {
   const { id } = req.params;
@@ -387,14 +378,14 @@ app.patch('/api/admin/users/:id/role', async (req, res) => {
 
 //profile update
 app.post('/api/profile/update-profile', async (req, res) => {
-  const { userId, name, email, image, number, bloodGroup, district, upazila } = req.body;
+  // Email is the login identity, so it is never updated here
+  const { userId, name, image, number, bloodGroup, district, upazila } = req.body;
 
   try {
     const filter = { _id: new ObjectId(userId) };
     const updateDoc = {
       $set: {
         name,
-        email,
         number,
         image,
         bloodGroup,
@@ -405,10 +396,11 @@ app.post('/api/profile/update-profile', async (req, res) => {
 
     const result = await usersCollection.updateOne(filter, updateDoc);
 
-    if (result.modifiedCount === 1) {
+    // matchedCount, not modifiedCount: saving without changes is still a success
+    if (result.matchedCount === 1) {
       res.status(200).json({ message: 'Profile updated successfully' });
     } else {
-      res.status(404).json({ message: 'User not found or no changes made' });
+      res.status(404).json({ message: 'User not found' });
     }
   } catch (error) {
     console.error('Error updating profile:', error);
