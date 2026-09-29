@@ -36,6 +36,9 @@ const donationRequestsCollection = database.collection("donationRequests");
 const fundsCollection = database.collection("funds");
 const countersCollection = database.collection("counters");
 
+const USER_ROLES = ['donor', 'volunteer', 'admin'];
+const USER_STATUSES = ['active', 'blocked'];
+
 // Connect once and reuse the promise, so a serverless cold start
 // never handles a request before the database is ready
 let dbReady = null;
@@ -84,7 +87,7 @@ app.post('/api/create-donation-request', async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
-    if (user.isActive === false) {
+    if (user.status === 'blocked') {
       return res.status(403).json({ message: 'Your account is blocked. Blocked users cannot create donation requests.' });
     }
 
@@ -229,7 +232,7 @@ app.get('/api/donors/search', async (req, res) => {
   const { bloodGroup, district, upazila } = req.query;
 
   // Only active users who have set a blood group
-  const query = { isActive: { $ne: false }, bloodGroup: { $nin: ['', null] } };
+  const query = { status: { $ne: 'blocked' }, bloodGroup: { $nin: ['', null] } };
   if (bloodGroup) query.bloodGroup = bloodGroup;
   if (district) query.district = district;
   if (upazila) query.upazila = upazila;
@@ -309,28 +312,24 @@ app.get('/api/all-blood-donation-requests', async (req, res) => {
   }
 });
 
-// Toggle user active/blocked status (isActive: boolean)
+// Block / unblock a user (status: "active" | "blocked")
 app.patch('/api/admin/users/:id/status', async (req, res) => {
   const { id } = req.params;
-  const { isActive } = req.body; // Expects boolean true or false
+  const { status } = req.body;
+
+  if (!USER_STATUSES.includes(status)) {
+    return res.status(400).json({ message: 'Status must be "active" or "blocked"' });
+  }
 
   try {
     const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
     const result = await usersCollection.updateOne(
       query,
-      {
-        $set: {
-          isActive: Boolean(isActive),
-          updatedAt: new Date()
-        }
-      }
+      { $set: { status, updatedAt: new Date() } }
     );
 
     if (result.matchedCount === 1) {
-      res.status(200).json({
-        message: `User is now ${isActive ? "active" : "blocked"}`,
-        isActive: Boolean(isActive)
-      });
+      res.status(200).json({ message: `User is now ${status}`, status });
     } else {
       res.status(404).json({ message: 'User not found' });
     }
@@ -341,26 +340,24 @@ app.patch('/api/admin/users/:id/status', async (req, res) => {
 });
 
 
-// Update user role (handles both 'Role' and 'role')
+// Update user role ("donor" | "volunteer" | "admin")
 app.patch('/api/admin/users/:id/role', async (req, res) => {
   const { id } = req.params;
-  const { role } = req.body; // "admin" | "volunteer" | "donor"
+  const role = String(req.body.role || '').toLowerCase();
+
+  if (!USER_ROLES.includes(role)) {
+    return res.status(400).json({ message: 'Role must be donor, volunteer or admin' });
+  }
 
   try {
     const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
     const result = await usersCollection.updateOne(
       query,
-      {
-        $set: {
-          Role: role.toLowerCase(),
-          role: role.toLowerCase(),
-          updatedAt: new Date()
-        }
-      }
+      { $set: { role, updatedAt: new Date() } }
     );
 
     if (result.matchedCount === 1) {
-      res.status(200).json({ message: `User role changed to ${role}` });
+      res.status(200).json({ message: `User role changed to ${role}`, role });
     } else {
       res.status(404).json({ message: 'User not found' });
     }
@@ -369,6 +366,7 @@ app.patch('/api/admin/users/:id/role', async (req, res) => {
     res.status(500).json({ message: 'Internal server error' });
   }
 });
+
 
 
 
