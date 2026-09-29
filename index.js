@@ -182,6 +182,30 @@ async function run() {
       }
     });
 
+    // Public donor search (?bloodGroup=A%2B&district=Dhaka&upazila=Savar)
+    app.get('/api/donors/search', async (req, res) => {
+      const { bloodGroup, district, upazila } = req.query;
+
+      // Only active users who have set a blood group
+      const query = { isActive: { $ne: false }, bloodGroup: { $nin: ['', null] } };
+      if (bloodGroup) query.bloodGroup = bloodGroup;
+      if (district) query.district = district;
+      if (upazila) query.upazila = upazila;
+
+      try {
+        const donors = await usersCollection
+          .find(query)
+          .project({ name: 1, image: 1, email: 1, number: 1, bloodGroup: 1, district: 1, upazila: 1 })
+          .sort({ name: 1 })
+          .toArray();
+
+        res.status(200).json(donors);
+      } catch (error) {
+        console.error('Error searching donors:', error);
+        res.status(500).json({ message: 'Internal server error' });
+      }
+    });
+
     // Get donation request details by ID
     app.get("/api/donation-requests/detail/:id", async (req, res) => {
       const { id } = req.params;
