@@ -154,6 +154,43 @@ async function run() {
       }
     });
 
+    // ── Update request status & save donor details when committed ──
+    app.patch('/api/donation-requests/status/:id', async (req, res) => {
+      const { id } = req.params;
+      const { status, donorName, donorEmail, donorId } = req.body;
+
+      try {
+        const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+
+        const updateFields = {
+          status,
+          updatedAt: new Date().toISOString()
+        };
+
+        // Attach donor information if coming from the commitment modal
+        if (donorName) updateFields.donorName = donorName;
+        if (donorEmail) updateFields.donorEmail = donorEmail;
+        if (donorId) updateFields.donorId = donorId;
+
+        const result = await donationRequestsCollection.updateOne(query, {
+          $set: updateFields
+        });
+
+        if (result.matchedCount === 1) {
+          res.status(200).json({
+            message: "Status updated successfully",
+            status,
+            ...updateFields
+          });
+        } else {
+          res.status(404).json({ message: "Request not found" });
+        }
+      } catch (error) {
+        console.error("Status update error:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
     // All donation requests (Admin only)
     app.get('/api/all-blood-donation-requests', async (req, res) => {
       try {
@@ -165,6 +202,7 @@ async function run() {
       }
     });
 
+    // Update donation request status by admin and volunteer (e.g., "pending", "approved", "canceled")
     app.patch('/api/donation-requests/status/:id', async (req, res) => {
       const { id } = req.params;
       const { status } = req.body;
