@@ -141,6 +141,19 @@ async function run() {
       }
     });
 
+    // Get donation request details by ID
+    app.get("/api/donation-requests/detail/:id", async (req, res) => {
+      const { id } = req.params;
+      try {
+        const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+        const request = await donationRequestsCollection.findOne(query);
+        if (!request) return res.status(404).json({ message: "Request not found" });
+        res.status(200).json(request);
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
     // All donation requests (Admin only)
     app.get('/api/all-blood-donation-requests', async (req, res) => {
       try {
