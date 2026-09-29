@@ -36,6 +36,20 @@ async function run() {
       const donationRequest = req.body;
 
       try {
+        // Only active users can create donation requests
+        const { userId } = donationRequest;
+        if (!userId || !ObjectId.isValid(userId)) {
+          return res.status(401).json({ message: 'You must be logged in to create a request' });
+        }
+
+        const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
+        if (!user) {
+          return res.status(404).json({ message: 'User not found' });
+        }
+        if (user.isActive === false) {
+          return res.status(403).json({ message: 'Your account is blocked. Blocked users cannot create donation requests.' });
+        }
+
         const result = await donationRequestsCollection.insertOne(donationRequest);
         res.status(201).json({ message: 'Donation request created successfully', id: result.insertedId });
       } catch (error) {
@@ -225,7 +239,7 @@ async function run() {
       }
     });
 
-    // Toggle user active/inactive status (isActive: boolean)
+    // Toggle user active/blocked status (isActive: boolean)
     app.patch('/api/admin/users/:id/status', async (req, res) => {
       const { id } = req.params;
       const { isActive } = req.body; // Expects boolean true or false
@@ -244,7 +258,7 @@ async function run() {
 
         if (result.matchedCount === 1) {
           res.status(200).json({
-            message: `User is now ${isActive ? "active" : "inactive"}`,
+            message: `User is now ${isActive ? "active" : "blocked"}`,
             isActive: Boolean(isActive)
           });
         } else {
