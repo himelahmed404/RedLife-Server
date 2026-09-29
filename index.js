@@ -76,6 +76,23 @@ async function run() {
       }
     });
 
+    // Donations made by a user (requests where they committed as the donor)
+    app.get('/api/my-donations/:donorId', async (req, res) => {
+      const { donorId } = req.params;
+
+      try {
+        const donations = await donationRequestsCollection
+          .find({ donorId: donorId })
+          .sort({ updatedAt: -1 })
+          .toArray();
+
+        res.status(200).json(donations);
+      } catch (error) {
+        console.error('Error fetching donations:', error);
+        res.status(500).json({ message: 'Internal server error' });
+      }
+    });
+
     // Edit/Update full donation request details
     app.put('/api/donation-requests/edit/:id', async (req, res) => {
       const { id } = req.params;
