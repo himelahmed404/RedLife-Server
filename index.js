@@ -7,6 +7,11 @@ const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 require('dotenv').config()
 
+// Stripe (test mode) — only initialised when the secret key is present
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? require('stripe')(process.env.STRIPE_SECRET_KEY)
+  : null;
+
 app.use(cors())
 app.use(express.json())
 
@@ -30,6 +35,11 @@ async function run() {
     const database = client.db("redlife");
     const usersCollection = database.collection("user");
     const donationRequestsCollection = database.collection("donationRequests");
+    const fundsCollection = database.collection("funds");
+    const countersCollection = database.collection("counters");
+
+    // One fund record per Stripe checkout session (prevents double counting)
+    await fundsCollection.createIndex({ sessionId: 1 }, { unique: true });
 
     // Create donation request
     app.post('/api/create-donation-request', async (req, res) => {
@@ -355,7 +365,123 @@ async function run() {
     });
 
 
+    // Funding apis (Stripe Checkout)
 
+    // All fund contributions, newest first
+    app.get('/api/funds', async (req, res) => {
+      try {
+        const funds = await fundsCollection.find({}).sort({ createdAt: -1 }).toArray();
+        res.status(200).json(funds);
+      } catch (error) {
+        console.error('Error fetching funds:', error);
+        res.status(500).json({ message: 'Internal server error' });
+      }
+    });
+
+    // Create a Stripe Checkout session and return its hosted payment page URL
+    app.post('/api/funds/create-checkout-session', async (req, res) => {
+      const { userId, amount } = req.body;
+      const amountTaka = Number(amount);
+
+      if (!stripe) {
+        return res.status(500).json({ message: 'Payments are not configured on the server' });
+      }
+      if (!userId || !ObjectId.isValid(userId)) {
+        return res.status(401).json({ message: 'You must be logged in to give fund' });
+      }
+      if (!Number.isInteger(amountTaka) || amountTaka < 100 || amountTaka > 500000) {
+        return res.status(400).json({ message: 'Amount must be a whole number between ৳100 and ৳500,000' });
+      }
+
+      try {
+        const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
+        if (!user) {
+          return res.status(404).json({ message: 'User not found' });
+        }
+
+        const clientUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:3000';
+
+        const session = await stripe.checkout.sessions.create({
+          mode: 'payment',
+          line_items: [
+            {
+              price_data: {
+                currency: 'bdt',
+                product_data: { name: 'RedLife fund contribution' },
+                unit_amount: amountTaka * 100, // Stripe expects poisha
+              },
+              quantity: 1,
+            },
+          ],
+          customer_email: user.email,
+          metadata: { userId, name: user.name || '' },
+          success_url: `${clientUrl}/funding?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${clientUrl}/funding?canceled=1`,
+        });
+
+        res.status(200).json({ url: session.url });
+      } catch (error) {
+        console.error('Error creating checkout session:', error);
+        res.status(500).json({ message: error.message || 'Could not start payment' });
+      }
+    });
+
+    // Verify a finished checkout with Stripe and record it (safe to call more than once)
+    app.post('/api/funds/confirm', async (req, res) => {
+      const { sessionId } = req.body;
+
+      if (!stripe) {
+        return res.status(500).json({ message: 'Payments are not configured on the server' });
+      }
+      if (!sessionId) {
+        return res.status(400).json({ message: 'Missing session id' });
+      }
+
+      try {
+        const existing = await fundsCollection.findOne({ sessionId });
+        if (existing) {
+          return res.status(200).json(existing);
+        }
+
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        if (session.payment_status !== 'paid') {
+          return res.status(400).json({ message: 'Payment has not been completed' });
+        }
+
+        // Sequential reference number: F-101, F-102, ...
+        const counter = await countersCollection.findOneAndUpdate(
+          { _id: 'fundRef' },
+          { $inc: { seq: 1 } },
+          { upsert: true, returnDocument: 'after' }
+        );
+
+        const fund = {
+          ref: `F-${100 + counter.seq}`,
+          sessionId,
+          userId: session.metadata?.userId || '',
+          name: session.metadata?.name || session.customer_details?.name || 'Anonymous',
+          email: session.customer_details?.email || session.customer_email || '',
+          amount: session.amount_total / 100,
+          currency: session.currency,
+          createdAt: new Date().toISOString(),
+        };
+
+        try {
+          await fundsCollection.insertOne(fund);
+        } catch (error) {
+          // Another confirm call for the same session won the race
+          if (error.code === 11000) {
+            return res.status(200).json(await fundsCollection.findOne({ sessionId }));
+          }
+          throw error;
+        }
+
+        res.status(201).json(fund);
+      } catch (error) {
+        console.error('Error confirming fund:', error);
+        res.status(500).json({ message: error.message || 'Could not confirm payment' });
+      }
+    });
 
 
     // Send a ping to confirm a successful connection
