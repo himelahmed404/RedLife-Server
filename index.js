@@ -3,6 +3,7 @@ require('dotenv').config()
 const express = require('express');
 const cors = require('cors')
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const { createRemoteJWKSet, jwtVerify } = require('jose');
 
 const app = express()
 const port = process.env.PORT || 5000
@@ -101,35 +102,82 @@ app.use(async (req, res, next) => {
   }
 });
 
-// Create donation request
-app.post('/api/create-donation-request', async (req, res) => {
-  const donationRequest = req.body;
+
+// ── JWT verification ──
+// The Next.js client (Better Auth jwt plugin) signs short-lived tokens with its own
+// keys; we verify them against its public JWKS. Only tokens signed by those keys pass.
+const AUTH_URL = (process.env.CLIENT_URL || 'http://localhost:3000').replace(/\/$/, '');
+const JWKS = createRemoteJWKSet(new URL(`${AUTH_URL}/api/auth/jwks`));
+
+const verifyToken = async (req, res, next) => {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) {
+    return res.status(401).json({ message: 'Unauthorized: please log in' });
+  }
+
+  let payload;
+  try {
+    ({ payload } = await jwtVerify(token, JWKS, { algorithms: ['EdDSA'] }));
+  } catch {
+    return res.status(401).json({ message: 'Unauthorized: invalid or expired token' });
+  }
+
+  if (!payload.sub || !ObjectId.isValid(payload.sub)) {
+    return res.status(401).json({ message: 'Unauthorized: invalid token' });
+  }
 
   try {
-    // Only active users can create donation requests
-    const { userId } = donationRequest;
-    if (!userId || !ObjectId.isValid(userId)) {
-      return res.status(401).json({ message: 'You must be logged in to create a request' });
-    }
-
-    const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
+    // Load the user fresh, so a block or role change applies to the very next request
+    const user = await usersCollection.findOne({ _id: new ObjectId(payload.sub) });
     if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(401).json({ message: 'Unauthorized: account not found' });
     }
-    if (user.status === 'blocked') {
-      return res.status(403).json({ message: 'Your account is blocked. Blocked users cannot create donation requests.' });
-    }
+    req.user = { ...user, id: user._id.toString(), role: user.role || 'donor' };
+    next();
+  } catch (error) {
+    console.error('Token user lookup error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+};
 
-    // Only take the form fields; status, donor and timestamps are set here, not by the client
+// Use after verifyToken
+const verifyActive = (req, res, next) => {
+  if (req.user.status === 'blocked') {
+    return res.status(403).json({ message: 'Your account is blocked. Contact an admin to reactivate it.' });
+  }
+  next();
+};
+
+const verifyRole = (...roles) => (req, res, next) => {
+  if (!roles.includes(req.user.role)) {
+    return res.status(403).json({ message: 'Forbidden: you do not have access to this action' });
+  }
+  next();
+};
+const verifyAdmin = verifyRole('admin');
+const verifyStaff = verifyRole('admin', 'volunteer');
+
+const findRequest = (id) =>
+  ObjectId.isValid(id) ? donationRequestsCollection.findOne({ _id: new ObjectId(id) }) : null;
+const isOwner = (request, user) => request.userId === user.id;
+
+// Create donation request
+// Only active users can create donation requests
+app.post('/api/create-donation-request', verifyToken, verifyActive, async (req, res) => {
+  try {
+    // Only take the form fields; requester, status and timestamps are set here, not by the client
     const {
       recipientName, bloodGroup, districtId, upazilaId, districtName, upazilaName,
-      hospitalName, address, donationDate, donationTime, message, requesterName, requesterEmail
-    } = donationRequest;
+      hospitalName, address, donationDate, donationTime, message
+    } = req.body;
 
     const newRequest = {
       recipientName, bloodGroup, districtId, upazilaId, districtName, upazilaName,
-      hospitalName, address, donationDate, donationTime, message, requesterName, requesterEmail,
-      userId,
+      hospitalName, address, donationDate, donationTime, message,
+      requesterName: req.user.name,
+      requesterEmail: req.user.email,
+      userId: req.user.id,
       status: 'pending',
       createdAt: new Date(),
     };
@@ -143,12 +191,10 @@ app.post('/api/create-donation-request', async (req, res) => {
 });
 
 
-//donation request get by user id (?status&page&limit)
-app.get('/api/donation-requests/:userId', async (req, res) => {
-  const { userId } = req.params;
-
+// The logged-in user's own donation requests (?status&page&limit)
+app.get('/api/my-donation-requests', verifyToken, async (req, res) => {
   try {
-    const result = await paginate(donationRequestsCollection, { userId }, req.query, REQUEST_STATUSES);
+    const result = await paginate(donationRequestsCollection, { userId: req.user.id }, req.query, REQUEST_STATUSES);
     res.status(200).json(result);
   } catch (error) {
     console.error('Error fetching donation requests:', error);
@@ -157,12 +203,10 @@ app.get('/api/donation-requests/:userId', async (req, res) => {
 });
 
 // Donations made by a user (requests where they committed as the donor)
-app.get('/api/my-donations/:donorId', async (req, res) => {
-  const { donorId } = req.params;
-
+app.get('/api/my-donations', verifyToken, async (req, res) => {
   try {
     const donations = await donationRequestsCollection
-      .find({ donorId: donorId })
+      .find({ donorId: req.user.id })
       .sort({ updatedAt: -1 })
       .toArray();
 
@@ -174,7 +218,8 @@ app.get('/api/my-donations/:donorId', async (req, res) => {
 });
 
 // Edit/Update full donation request details
-app.put('/api/donation-requests/edit/:id', async (req, res) => {
+// Owner or admin only; status changes go through the status route
+app.put('/api/donation-requests/edit/:id', verifyToken, async (req, res) => {
   const { id } = req.params;
   const {
     recipientName,
@@ -185,12 +230,19 @@ app.put('/api/donation-requests/edit/:id', async (req, res) => {
     address,
     donationDate,
     donationTime,
-    message,
-    status
+    message
   } = req.body;
 
   try {
-    const filter = { _id: new ObjectId(id) };
+    const request = await findRequest(id);
+    if (!request) {
+      return res.status(404).json({ message: "Request not found" });
+    }
+    if (!isOwner(request, req.user) && req.user.role !== 'admin') {
+      return res.status(403).json({ message: "Forbidden: you can only edit your own requests" });
+    }
+
+    const filter = { _id: request._id };
     const updateDoc = {
       $set: {
         recipientName,
@@ -202,7 +254,6 @@ app.put('/api/donation-requests/edit/:id', async (req, res) => {
         donationDate,
         donationTime,
         message,
-        ...(status && { status }),
         updatedAt: new Date().toISOString()
       }
     };
@@ -222,11 +273,20 @@ app.put('/api/donation-requests/edit/:id', async (req, res) => {
 
 
 // Delete a donation request
-app.delete('/api/donation-requests/:id', async (req, res) => {
+// Owner or admin only
+app.delete('/api/donation-requests/:id', verifyToken, async (req, res) => {
   const { id } = req.params;
 
   try {
-    const result = await donationRequestsCollection.deleteOne({ _id: new ObjectId(id) });
+    const request = await findRequest(id);
+    if (!request) {
+      return res.status(404).json({ message: "Request not found" });
+    }
+    if (!isOwner(request, req.user) && req.user.role !== 'admin') {
+      return res.status(403).json({ message: "Forbidden: you can only delete your own requests" });
+    }
+
+    const result = await donationRequestsCollection.deleteOne({ _id: request._id });
 
     if (result.deletedCount === 1) {
       res.status(200).json({ message: "Request deleted successfully" });
@@ -242,7 +302,7 @@ app.delete('/api/donation-requests/:id', async (req, res) => {
 //Admin apis
 
 // Get all users (?status=active|blocked&page&limit)
-app.get('/api/admin/users', async (req, res) => {
+app.get('/api/admin/users', verifyToken, verifyAdmin, async (req, res) => {
   try {
     const result = await paginate(usersCollection, {}, req.query, USER_STATUSES);
     res.status(200).json(result);
@@ -277,11 +337,10 @@ app.get('/api/donors/search', async (req, res) => {
 });
 
 // Get donation request details by ID
-app.get("/api/donation-requests/detail/:id", async (req, res) => {
+app.get("/api/donation-requests/detail/:id", verifyToken, async (req, res) => {
   const { id } = req.params;
   try {
-    const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
-    const request = await donationRequestsCollection.findOne(query);
+    const request = await findRequest(id);
     if (!request) return res.status(404).json({ message: "Request not found" });
     res.status(200).json(request);
   } catch (err) {
@@ -289,36 +348,54 @@ app.get("/api/donation-requests/detail/:id", async (req, res) => {
   }
 });
 
-// ── Update request status & save donor details when committed ──
-app.patch('/api/donation-requests/status/:id', async (req, res) => {
+// ── Update request status ──
+//  pending    -> inprogress        any active user except the requester (the "Donate" button);
+//                                  the donor is taken from the token
+//  inprogress -> done | canceled   the requester, an admin or a volunteer
+// The update filter includes the current status, so two donors can't claim the same request.
+app.patch('/api/donation-requests/status/:id', verifyToken, async (req, res) => {
   const { id } = req.params;
-  const { status, donorName, donorEmail, donorId } = req.body;
+  const { status } = req.body;
 
   try {
-    const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+    const request = await findRequest(id);
+    if (!request) {
+      return res.status(404).json({ message: "Request not found" });
+    }
 
-    const updateFields = {
-      status,
-      updatedAt: new Date().toISOString()
-    };
+    let fromStatus;
+    const updateFields = { status, updatedAt: new Date().toISOString() };
 
-    // Attach donor information if coming from the commitment modal
-    if (donorName) updateFields.donorName = donorName;
-    if (donorEmail) updateFields.donorEmail = donorEmail;
-    if (donorId) updateFields.donorId = donorId;
+    if (status === 'inprogress') {
+      if (req.user.status === 'blocked') {
+        return res.status(403).json({ message: 'Your account is blocked. Contact an admin to reactivate it.' });
+      }
+      if (isOwner(request, req.user)) {
+        return res.status(400).json({ message: "You cannot donate to your own request" });
+      }
+      fromStatus = 'pending';
+      updateFields.donorName = req.user.name;
+      updateFields.donorEmail = req.user.email;
+      updateFields.donorId = req.user.id;
+    } else if (status === 'done' || status === 'canceled') {
+      const canFinish = isOwner(request, req.user) || ['admin', 'volunteer'].includes(req.user.role);
+      if (!canFinish) {
+        return res.status(403).json({ message: "Forbidden: you cannot change this request's status" });
+      }
+      fromStatus = 'inprogress';
+    } else {
+      return res.status(400).json({ message: "Invalid status" });
+    }
 
-    const result = await donationRequestsCollection.updateOne(query, {
-      $set: updateFields
-    });
+    const result = await donationRequestsCollection.updateOne(
+      { _id: request._id, status: fromStatus },
+      { $set: updateFields }
+    );
 
     if (result.matchedCount === 1) {
-      res.status(200).json({
-        message: "Status updated successfully",
-        status,
-        ...updateFields
-      });
+      res.status(200).json({ message: "Status updated successfully", ...updateFields });
     } else {
-      res.status(404).json({ message: "Request not found" });
+      res.status(409).json({ message: `Only a ${fromStatus} request can be marked ${status}` });
     }
   } catch (error) {
     console.error("Status update error:", error);
@@ -326,8 +403,8 @@ app.patch('/api/donation-requests/status/:id', async (req, res) => {
   }
 });
 
-// All donation requests (Admin only)
-app.get('/api/all-blood-donation-requests', async (req, res) => {
+// All donation requests (admin + volunteer)
+app.get('/api/all-blood-donation-requests', verifyToken, verifyStaff, async (req, res) => {
   try {
     const result = await paginate(donationRequestsCollection, {}, req.query, REQUEST_STATUSES);
     res.status(200).json(result);
@@ -349,10 +426,13 @@ app.get('/api/pending-donation-requests', async (req, res) => {
 });
 
 // Block / unblock a user (status: "active" | "blocked")
-app.patch('/api/admin/users/:id/status', async (req, res) => {
+app.patch('/api/admin/users/:id/status', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
 
+  if (id === req.user.id) {
+    return res.status(400).json({ message: 'You cannot change your own status' });
+  }
   if (!USER_STATUSES.includes(status)) {
     return res.status(400).json({ message: 'Status must be "active" or "blocked"' });
   }
@@ -377,10 +457,13 @@ app.patch('/api/admin/users/:id/status', async (req, res) => {
 
 
 // Update user role ("donor" | "volunteer" | "admin")
-app.patch('/api/admin/users/:id/role', async (req, res) => {
+app.patch('/api/admin/users/:id/role', verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
   const role = String(req.body.role || '').toLowerCase();
 
+  if (id === req.user.id) {
+    return res.status(400).json({ message: 'You cannot change your own role' });
+  }
   if (!USER_ROLES.includes(role)) {
     return res.status(400).json({ message: 'Role must be donor, volunteer or admin' });
   }
@@ -411,12 +494,12 @@ app.patch('/api/admin/users/:id/role', async (req, res) => {
 
 
 //profile update
-app.post('/api/profile/update-profile', async (req, res) => {
+app.post('/api/profile/update-profile', verifyToken, async (req, res) => {
   // Email is the login identity, so it is never updated here
-  const { userId, name, image, number, bloodGroup, district, upazila } = req.body;
+  const { name, image, number, bloodGroup, district, upazila } = req.body;
 
   try {
-    const filter = { _id: new ObjectId(userId) };
+    const filter = { _id: req.user._id };
     const updateDoc = {
       $set: {
         name,
@@ -471,7 +554,7 @@ function bucketKeys(unit, count) {
   return keys;
 }
 
-app.get('/api/dashboard/stats', async (req, res) => {
+app.get('/api/dashboard/stats', verifyToken, verifyStaff, async (req, res) => {
   const range = STAT_RANGES[req.query.range] ? req.query.range : 'daily';
   const { unit, count } = STAT_RANGES[range];
   const keys = bucketKeys(unit, count);
@@ -527,7 +610,7 @@ app.get('/api/dashboard/stats', async (req, res) => {
 // Funding apis (Stripe Checkout)
 
 // All fund contributions, newest first
-app.get('/api/funds', async (req, res) => {
+app.get('/api/funds', verifyToken, async (req, res) => {
   try {
     const funds = await fundsCollection.find({}).sort({ createdAt: -1 }).toArray();
     res.status(200).json(funds);
@@ -538,25 +621,19 @@ app.get('/api/funds', async (req, res) => {
 });
 
 // Create a Stripe Checkout session and return its hosted payment page URL
-app.post('/api/funds/create-checkout-session', async (req, res) => {
-  const { userId, amount } = req.body;
-  const amountTaka = Number(amount);
+app.post('/api/funds/create-checkout-session', verifyToken, async (req, res) => {
+  const amountTaka = Number(req.body.amount);
+  const user = req.user;
+  const userId = user.id;
 
   if (!stripe) {
     return res.status(500).json({ message: 'Payments are not configured on the server' });
-  }
-  if (!userId || !ObjectId.isValid(userId)) {
-    return res.status(401).json({ message: 'You must be logged in to give fund' });
   }
   if (!Number.isInteger(amountTaka) || amountTaka < 100 || amountTaka > 500000) {
     return res.status(400).json({ message: 'Amount must be a whole number between ৳100 and ৳500,000' });
   }
 
   try {
-    const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
 
     const clientUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:3000';
 
@@ -586,7 +663,7 @@ app.post('/api/funds/create-checkout-session', async (req, res) => {
 });
 
 // Verify a finished checkout with Stripe and record it (safe to call more than once)
-app.post('/api/funds/confirm', async (req, res) => {
+app.post('/api/funds/confirm', verifyToken, async (req, res) => {
   const { sessionId } = req.body;
 
   if (!stripe) {
