@@ -443,6 +443,87 @@ app.post('/api/profile/update-profile', async (req, res) => {
 });
 
 
+// Dashboard stats for admin / volunteer home
+
+// Dhaka is UTC+6 all year (no DST), so buckets are cut at Dhaka midnight
+const DHAKA_OFFSET_MS = 6 * 60 * 60 * 1000;
+const STAT_RANGES = {
+  daily: { unit: 'day', count: 14 },
+  weekly: { unit: 'week', count: 12 },
+  monthly: { unit: 'month', count: 12 },
+};
+
+// Start dates (YYYY-MM-DD, Dhaka time) of the last `count` buckets, oldest first
+function bucketKeys(unit, count) {
+  const now = new Date(Date.now() + DHAKA_OFFSET_MS); // Dhaka wall clock, read via UTC getters
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  if (unit === 'week') start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7)); // back to Monday
+  if (unit === 'month') start.setUTCDate(1);
+
+  const keys = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date(start);
+    if (unit === 'day') d.setUTCDate(d.getUTCDate() - i);
+    if (unit === 'week') d.setUTCDate(d.getUTCDate() - 7 * i);
+    if (unit === 'month') d.setUTCMonth(d.getUTCMonth() - i);
+    keys.push(d.toISOString().slice(0, 10));
+  }
+  return keys;
+}
+
+app.get('/api/dashboard/stats', async (req, res) => {
+  const range = STAT_RANGES[req.query.range] ? req.query.range : 'daily';
+  const { unit, count } = STAT_RANGES[range];
+  const keys = bucketKeys(unit, count);
+  const since = new Date(new Date(`${keys[0]}T00:00:00Z`).getTime() - DHAKA_OFFSET_MS);
+
+  try {
+    const [totalDonors, totalRequests, fundingTotals, statusGroups, buckets] = await Promise.all([
+      usersCollection.countDocuments({ role: 'donor' }),
+      donationRequestsCollection.countDocuments(),
+      fundsCollection.aggregate([{ $group: { _id: null, total: { $sum: '$amount' } } }]).toArray(),
+      donationRequestsCollection.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]).toArray(),
+      donationRequestsCollection.aggregate([
+        { $match: { createdAt: { $gte: since } } },
+        {
+          $group: {
+            _id: {
+              $dateToString: {
+                format: '%Y-%m-%d',
+                timezone: 'Asia/Dhaka',
+                date: { $dateTrunc: { date: '$createdAt', unit, timezone: 'Asia/Dhaka', startOfWeek: 'monday' } },
+              },
+            },
+            count: { $sum: 1 },
+          },
+        },
+      ]).toArray(),
+    ]);
+
+    const statusCounts = Object.fromEntries(REQUEST_STATUSES.map((s) => [s, 0]));
+    statusGroups.forEach(({ _id, count }) => {
+      if (_id in statusCounts) statusCounts[_id] = count;
+    });
+
+    // Every bucket is present, empty ones as 0, so the chart has no gaps
+    const byKey = Object.fromEntries(buckets.map(({ _id, count }) => [_id, count]));
+    const series = keys.map((key) => ({ key, count: byKey[key] || 0 }));
+
+    res.status(200).json({
+      totalDonors,
+      totalRequests,
+      totalFunding: fundingTotals[0]?.total || 0,
+      statusCounts,
+      range,
+      series,
+    });
+  } catch (error) {
+    console.error('Error loading dashboard stats:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
 // Funding apis (Stripe Checkout)
 
 // All fund contributions, newest first
