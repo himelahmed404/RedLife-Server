@@ -343,8 +343,9 @@ app.get("/api/donation-requests/detail/:id", verifyToken, async (req, res) => {
     const request = await findRequest(id);
     if (!request) return res.status(404).json({ message: "Request not found" });
     res.status(200).json(request);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  } catch (error) {
+    console.error("Request detail error:", error);
+    res.status(500).json({ message: "Internal server error" });
   }
 });
 
