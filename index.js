@@ -38,6 +38,35 @@ const countersCollection = database.collection("counters");
 
 const USER_ROLES = ['donor', 'volunteer', 'admin'];
 const USER_STATUSES = ['active', 'blocked'];
+const REQUEST_STATUSES = ['pending', 'inprogress', 'done', 'canceled'];
+
+// Paginated list: ?page=1&limit=10&status=pending
+// Returns { items, total, page, limit, totalPages, counts } where counts are per
+// status across the whole (unfiltered) list, for the filter tab badges.
+async function paginate(collection, baseFilter, query, allowedStatuses) {
+  const page = Math.max(1, parseInt(query.page, 10) || 1);
+  const limit = Math.min(50, Math.max(1, parseInt(query.limit, 10) || 10));
+  const status = allowedStatuses.includes(query.status) ? query.status : null;
+  const filter = status ? { ...baseFilter, status } : baseFilter;
+
+  const [items, total, grouped] = await Promise.all([
+    collection.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray(),
+    collection.countDocuments(filter),
+    collection.aggregate([
+      { $match: baseFilter },
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]).toArray(),
+  ]);
+
+  const counts = { all: 0 };
+  allowedStatuses.forEach((s) => { counts[s] = 0; });
+  grouped.forEach(({ _id, count }) => {
+    if (_id in counts) counts[_id] = count;
+    counts.all += count;
+  });
+
+  return { items, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)), counts };
+}
 
 // Connect once and reuse the promise, so a serverless cold start
 // never handles a request before the database is ready
@@ -114,17 +143,13 @@ app.post('/api/create-donation-request', async (req, res) => {
 });
 
 
-//donation request get by user id
+//donation request get by user id (?status&page&limit)
 app.get('/api/donation-requests/:userId', async (req, res) => {
   const { userId } = req.params;
 
   try {
-    const donationRequests = await donationRequestsCollection
-      .find({ userId: userId })
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    res.status(200).json(donationRequests);
+    const result = await paginate(donationRequestsCollection, { userId }, req.query, REQUEST_STATUSES);
+    res.status(200).json(result);
   } catch (error) {
     console.error('Error fetching donation requests:', error);
     res.status(500).json({ message: 'Internal server error' });
@@ -216,11 +241,11 @@ app.delete('/api/donation-requests/:id', async (req, res) => {
 
 //Admin apis
 
-// Get all users
+// Get all users (?status=active|blocked&page&limit)
 app.get('/api/admin/users', async (req, res) => {
   try {
-    const users = await usersCollection.find({}).sort({ createdAt: -1 }).toArray();
-    res.status(200).json(users);
+    const result = await paginate(usersCollection, {}, req.query, USER_STATUSES);
+    res.status(200).json(result);
   } catch (error) {
     console.error('Error fetching users:', error);
     res.status(500).json({ message: 'Internal server error' });
@@ -304,10 +329,21 @@ app.patch('/api/donation-requests/status/:id', async (req, res) => {
 // All donation requests (Admin only)
 app.get('/api/all-blood-donation-requests', async (req, res) => {
   try {
-    const donationRequests = await donationRequestsCollection.find({}).sort({ createdAt: -1 }).toArray();
-    res.status(200).json(donationRequests);
+    const result = await paginate(donationRequestsCollection, {}, req.query, REQUEST_STATUSES);
+    res.status(200).json(result);
   } catch (error) {
     console.error('Error fetching donation requests:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Public board: pending requests only (?page&limit)
+app.get('/api/pending-donation-requests', async (req, res) => {
+  try {
+    const result = await paginate(donationRequestsCollection, { status: 'pending' }, req.query, []);
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('Error fetching pending requests:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
